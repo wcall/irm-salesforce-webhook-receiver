@@ -62,6 +62,33 @@ https://orgfarm-4cd415b5fa-dev-ed.develop.my.salesforce.com/services/data/v59.0/
   [Create a permission set](https://help.salesforce.com/s/articleView?id=platform.perm_sets_create.htm&type=5)
   and [Reset your security token](https://help.salesforce.com/s/articleView?id=user_security_token.htm&type=5).
 
+### Verifying your Connected App credentials
+
+To confirm your Connected App's consumer key and secret are valid, request a
+Salesforce access token directly. (This requires the **Client Credentials** flow
+to be enabled on the Connected App and a "Run As" user assigned.)
+
+```bash
+curl -X POST https://orgfarm-4cd415b5fa-dev-ed.develop.my.salesforce.com/services/oauth2/token \
+  -d "grant_type=client_credentials" \
+  -d "client_id=<YOUR_CONSUMER_KEY>" \
+  -d "client_secret=<YOUR_CONSUMER_SECRET>"
+```
+
+A successful response returns a Salesforce `access_token` (and `instance_url`),
+which confirms the credentials work:
+
+```json
+{ "access_token": "00D...!AQ...", "instance_url": "https://...my.salesforce.com", "token_type": "Bearer", ... }
+```
+
+> **Note:** this `access_token` is a short-lived Salesforce API token — it is
+> **not** the `SHARED_SECRET`. The receiver obtains its own token internally at
+> runtime via the credentials in `.env`, so you don't paste this value anywhere.
+> The `SHARED_SECRET` is a separate value **you generate yourself** (e.g.
+> `openssl rand -hex 32`) and must match the `Authorization: Bearer <SHARED_SECRET>`
+> header that Grafana IRM sends to this receiver.
+
 ## Setup
 
 1. Install dependencies:

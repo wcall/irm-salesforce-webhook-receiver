@@ -13,20 +13,19 @@ const SF_CLIENT_ID  = process.env.SF_CLIENT_ID;
 const SF_CLIENT_SECRET = process.env.SF_CLIENT_SECRET;
 const SF_USERNAME   = process.env.SF_USERNAME;
 const SF_PASSWORD   = process.env.SF_PASSWORD;   // password + security token
-const SHARED_SECRET = process.env.SHARED_SECRET; // must match IRM Authorization header
 
-// --- Startup config debug (remove or guard in production) ---
-// Reveals whether SHARED_SECRET actually loaded from .env, and flags hidden
-// quotes/whitespace that break the exact-string auth comparison below.
-console.log('[startup] SHARED_SECRET present:', SHARED_SECRET !== undefined && SHARED_SECRET !== '');
-if (SHARED_SECRET !== undefined) {
-  console.log('[startup] SHARED_SECRET length:', SHARED_SECRET.length);
-  console.log('[startup] SHARED_SECRET JSON :', JSON.stringify(SHARED_SECRET)); // quotes expose surrounding spaces/quotes
-  if (SHARED_SECRET !== SHARED_SECRET.trim()) {
-    console.warn('[startup] WARNING: SHARED_SECRET has leading/trailing whitespace!');
-  }
+// Inbound auth is OPTIONAL. If SHARED_SECRET is set (non-empty after trimming),
+// requests must send `Authorization: Bearer <SHARED_SECRET>`. If it is unset/
+// empty, the auth check is skipped entirely and any caller that can reach the
+// endpoint may create cases — rely on the network/Security Group in that case.
+const SHARED_SECRET = process.env.SHARED_SECRET?.trim();
+const AUTH_ENABLED  = !!SHARED_SECRET;
+
+// --- Startup config log ---
+if (AUTH_ENABLED) {
+  console.log(`[startup] Inbound auth ENABLED — expecting "Authorization: Bearer <SHARED_SECRET>" (secret length: ${SHARED_SECRET.length})`);
 } else {
-  console.warn('[startup] WARNING: SHARED_SECRET is undefined — every request will 401. Check .env and that you run with --env-file=.env');
+  console.warn('[startup] Inbound auth DISABLED — SHARED_SECRET is not set, so /salesforce/case accepts unauthenticated requests. Restrict access via the EC2 Security Group, or set SHARED_SECRET to lock it down.');
 }
 
 /*
@@ -53,7 +52,6 @@ async function getSFToken() {
     const res = await fetch(SF_AUTH_URL, { method: 'POST', body: params });
     const data = await res.json();
     if (!data.access_token) throw new Error(`SF auth failed: ${JSON.stringify(data)}`);
-    console.log('getSFToken: SF token:', data.access_token);
     return { token: data.access_token, instanceUrl: data.instance_url };
 }
 
@@ -66,31 +64,18 @@ const SEVERITY_MAP = {
 };
 
 app.post('/salesforce/case', async (req, res) => {
-  // Auth check
-  const auth = req.headers['authorization'];
-  const expected = `Bearer ${SHARED_SECRET}`;
-
-  // --- Auth debug (remove in production: prints the secret) ---
-  console.log('--- AUTH DEBUG ---');
-  console.log('[auth] header present  :', auth !== undefined);
-  console.log('[auth] received        :', JSON.stringify(auth));
-  console.log('[auth] expected        :', JSON.stringify(expected));
-  console.log('[auth] received length :', auth ? auth.length : 'n/a', '| expected length:', expected.length);
-  console.log('[auth] match           :', auth === expected);
-  if (auth && auth !== expected) {
-    if (!auth.startsWith('Bearer ')) {
-      console.warn('[auth] mismatch reason: header does not start with "Bearer " prefix');
-    } else if (auth.trim() === expected.trim()) {
-      console.warn('[auth] mismatch reason: only differs by leading/trailing whitespace');
-    } else {
-      console.warn('[auth] mismatch reason: token value differs from SHARED_SECRET');
+  // Inbound auth check — only enforced when SHARED_SECRET is configured.
+  if (AUTH_ENABLED) {
+    const auth = req.headers['authorization'];
+    const expected = `Bearer ${SHARED_SECRET}`;
+    if (auth !== expected) {
+      console.warn('[auth] rejected: Authorization header missing or does not match SHARED_SECRET');
+      return res.status(401).json({ error: 'Unauthorized' });
     }
+    console.log('[auth] OK — request authorized');
+  } else {
+    console.log('[auth] skipped — SHARED_SECRET not set (auth disabled)');
   }
-
-  if (auth !== expected) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  console.log('[auth] OK — request authorized');
 
   const { subject, description, severity, irm_incident_id, origin } = req.body;
 
@@ -99,11 +84,11 @@ app.post('/salesforce/case', async (req, res) => {
 
     const casePayload = {
       Subject:     subject || 'Grafana IRM Incident',
-      Description: description,
+      Description: description || 'Grafana IRM Demo' + Date.now(),
       Priority:    SEVERITY_MAP[severity?.toLowerCase()] || 'Medium',
       Origin:      origin || 'Grafana IRM',
       // Optional: map to a custom SF field
-      // IRM_Incident_ID__c: irm_incident_id,
+      IRM_Incident_ID__c: irm_incident_id || 'Grafana IRM Demo' + Date.now(),
     };
 
     const sfRes = await fetch(`${instanceUrl}/services/data/v59.0/sobjects/Case`, {
